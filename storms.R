@@ -44,13 +44,44 @@ if(!file.exists("FStormData.csv")){
 storms <- fread("FStormData.csv", na.strings = "") |> janitor::clean_names()
 
 # ---- Data exploration ----
-head(storms)
-storms |> skimr::skim()
+# head(storms)
+# storms |> skimr::skim()
 
 # This data needs transformation
 dates <- names(storms)[names(storms) %like% "date"] 
-times <- names(storms)[names(storms) %like% "time"]
+times <- names(storms)[names(storms) %like% "_time"]
 tidy_storms <- copy(storms)
-tidy_storms[, bgn_datetime := lubridate::mdy_hm(paste(bgn_date, bgn_time))]
-tidy_storms[, end_datetime := lubridate::mdy_hm(paste(end_date, end_time))]
-tidy_storms[is.na(end_time),.N / tidy_storms[,.N]]
+
+tidy_storms[, (dates) := lapply(.SD, sub, pattern = " .*$", replacement = ""), .SDcols = dates]
+tidy_storms[, (dates) := lapply(.SD, mdy), .SDcols = dates]
+tidy_storms[, colMeans(is.na(.SD)) |> round(2), .SDcols = (dates)] # NA proportion
+tidy_storms[, tail(.SD, 10), .SDcols = (dates)] # Last 10 rows
+
+# Times have different formats:
+set.seed(42)
+tidy_storms[!is.na(end_time), unique(end_time)] |> sample(size = 7)
+
+# We won't use them so we won't clean them
+# We select just the cols we will use:
+names(tidy_storms)
+tidy_storms <- tidy_storms[, .SD, 
+                           .SDcols = c("bgn_date", "end_date", "state", "state_2", 
+                                       "county", "countyname", "evtype", "fatalities",
+                                       "injuries", "propdmg", "propdmgexp", 
+                                       "cropdmg", "cropdmgexp")]
+
+
+# Función rápida para mapear exponentes
+map_exp <- function(x) {
+  x <- toupper(x)
+  ifelse(x == "K", 1000,
+         ifelse(x == "M", 1000000,
+                ifelse(x == "B", 1000000000, 
+                       ifelse(x %in% c("0":"8"), 10^as.numeric(x), 1))))
+}
+
+# Crear columnas de daño real
+tidy_storms[, prop_total := propdmg * map_exp(propdmgexp)]
+tidy_storms[, crop_total := cropdmg * map_exp(cropdmgexp)]
+tidy_storms[, economic_loss := prop_total + crop_total]
+# ==============================================================================
