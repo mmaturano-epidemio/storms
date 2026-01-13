@@ -33,7 +33,12 @@
 if(!require(pacman)){
   install.packages("pacman")
 }
-pacman::p_load(data.table, ggplot2, lubridate)
+pacman::p_load(data.table, 
+               ggplot2, 
+               lubridate,
+               flextable,
+               skimr,
+               stringr)
 
 # Now we download the data if needed, and read the file
 if(!file.exists("FStormData.csv")){
@@ -43,11 +48,7 @@ if(!file.exists("FStormData.csv")){
 
 storms <- fread("FStormData.csv", na.strings = "") |> janitor::clean_names()
 
-# ---- Data exploration ----
-# head(storms)
-# storms |> skimr::skim()
-
-# This data needs transformation
+# ---- Data cleaning ----
 dates <- names(storms)[names(storms) %like% "date"] 
 times <- names(storms)[names(storms) %like% "_time"]
 tidy_storms <- copy(storms)
@@ -63,13 +64,30 @@ tidy_storms[!is.na(end_time), unique(end_time)] |> sample(size = 7)
 
 # We won't use them so we won't clean them
 # We select just the cols we will use:
-names(tidy_storms)
-tidy_storms <- tidy_storms[, .SD, 
-                           .SDcols = c("bgn_date", "end_date", "state", "state_2", 
-                                       "county", "countyname", "evtype", "fatalities",
-                                       "injuries", "propdmg", "propdmgexp", 
-                                       "cropdmg", "cropdmgexp")]
+tidy_storms <- tidy_storms[, .(bgn_date, end_date, state = as.factor(state), 
+                           state_2 = as.factor(state_2), county = as.factor(county),
+                           countyname, evtype, fatalities,
+                           injuries, propdmg, propdmgexp, cropdmg, cropdmgexp)]
 
+# Acording to NOAA, the types of events are:
+# Astronomical Low Tide, Avalanche, Blizzard, Coastal Flood,
+# Cold/Wind Chill, Debris Flow, Dense Fog, Dense Smoke, Drought,
+# Dust Devil, Dust Storm, Excessive Heat, 
+# Extreme Cold/Wind Chill, Flash Flood, Flood, Freezing Fog,
+# Frost/Freeze, Funnel Cloud, Hail, Heat, Heavy Rain, Heavy Snow,
+# High Surf, High Wind, Hurricane/Typhoon, Ice Storm, 
+# Lakeshore Flood, Lake-Effect Snow, Lightning, Marine Hail,
+# Marine High Wind, Marine Strong Wind, Marine Thunderstorm Wind,
+# Rip Current, Seiche, Sleet, Storm Tidem, Strong Wind, Thunderstorm Wind,
+# Tornado, Tropical Depression, Tropical Storm, Tsunami, 
+# Volcanic Ash, Waterspout, Wildfire, Winter Storm, Winter Weather
+tidy_storms[, evtype := stringr::str_to_title(evtype)]
+tidy_storms[, unique(evtype)] |> sample(20)
+tidy_storms[, clean_event := fcase(evtype %like% "Tornado", Tornado,
+                                   default = evtype)]
+
+# ---- Human loses ----
+tidy_storms[, .(fatalities, injuries), evtype]
 
 # Función rápida para mapear exponentes
 map_exp <- function(x) {
