@@ -87,10 +87,10 @@ tidy_storms <- tidy_storms[, .(bgn_date, end_date, state = as.factor(state),
 
 tidy_storms[, evtype := stringr::str_to_title(evtype)]
 tidy_storms[, unique(evtype)] |> sort()
-tidy_storms <- tidy_storms[!clean_event %like% "(?i)Summary"]
+tidy_storms <- tidy_storms[!evtype %like% "(?i)Summary"]
 tidy_storms[, clean_event := fcase(
   evtype %like% "(?i)Flash Flood", "Flash Flood", # 
-  evtype %like% "(?i)Light|Ligh?tning|Ligntning", "Lightning", #
+  evtype %like% "(?i)Ligh?tning|Ligntning", "Lightning", #
   evtype %like% "(?i) Devil|Devel", "Dust Devil", #
   evtype %like% "(?i)Dust Storm", "Dust Storm", #
   evtype %like% "(?i)Lakeshore Flood", "Lakeshore Flood", # 
@@ -118,7 +118,6 @@ tidy_storms[, clean_event := fcase(
   evtype %like% "(?i)Drought", "Drought", #
   evtype %like% "(?i)Smoke", "Dense Smoke", #
   evtype %like% "(?i)Avalanche", "Avalanche", #
-  evtype %like% "(?i)Debris", "Debris Flow", #
   evtype %like% "(?i)Current", "Rip Current",
   evtype %like% "(?i)Astronomical High", "Astronomical High Tide",
   evtype %like% "(?i)Astronomical Low", "Astronomical Low Tide",
@@ -139,27 +138,47 @@ tidy_storms[, clean_event := fcase(
   evtype %like% "(?i)Waterspout", "Waterspout", #
   evtype %like% "(?i)Blizzard", "Blizzard", #
   evtype %like% "(?i)Frost|Freeze", "Frost/Freeze", #
+  evtype %like% "(?i)Landslide|Mud ?slide|Debris|Rock Slide", "Debris Flow",
+  evtype %like% "(?i)Storm Surge|Coastal ?storm", "Storm Surge/Tide",
+  evtype %like% "(?i)Extreme Windchill|Low Temp|Hypothermia|Exposure", "Extreme Cold/Wind Chill",
+  evtype %like% "(?i)Glaze|Ice (On Road|Roads)|Black Ice|Freezing (Drizzle|Spray)|Wintry Mix", "Winter Weather",
+  evtype %like% "(?i)^Winds?$", "Strong Wind",
+  evtype %like% "(?i)Thundertorm|Tunderstorm", "Thunderstorm Wind",
+  evtype %like% "(?i)Rough Seas|High Seas|Heavy Seas|Marine (Mishap|Accident)|Drowning", "High Surf",
+  evtype %like% "(?i)Avalance", "Avalanche",
+  evtype %like% "(?i)Whirlwind", "Tornado",
+  evtype %like% "(?i)Rapidly Rising Water", "Flash Flood",
+  evtype %like% "(?i)Other|Summary|\\?|None", "Other",
     default = evtype
 )]
-tidy_storms[, unique(clean_event)]
-check_impacto <- tidy_storms[clean_event == evtype, 
-                             .(Fatalidades = sum(fatalities), N = .N), 
-                             by = evtype][order(-Fatalidades)]
-head(check_impacto, 50)
-# ---- Human loses ----
-tidy_storms[, .(fatalities, injuries), evtype]
+tidy_storms[, uniqueN(clean_event)]
+tidy_storms[clean_event == evtype,
+            .(fatalities = sum(fatalities), N = .N),
+            by = clean_event][order(-fatalities)][fatalities > 0]
 
-# Función rápida para mapear exponentes
 map_exp <- function(x) {
-  x <- toupper(x)
-  ifelse(x == "K", 1000,
-         ifelse(x == "M", 1000000,
-                ifelse(x == "B", 1000000000, 
-                       ifelse(x %in% c("0":"8"), 10^as.numeric(x), 1))))
+  x <- toupper(as.character(x))
+  fcase(
+    x == "H", 1e2,
+    x == "K", 1e3,
+    x == "M", 1e6,
+    x == "B", 1e9,
+    x %in% c("", "-", "?", "+"), 1,
+    x %in% as.character(0:8), 10, # O 10^as.numeric(x) si quieres ser muy estricto
+    default = 1
+  )
 }
 
-# Crear columnas de daño real
 tidy_storms[, prop_total := propdmg * map_exp(propdmgexp)]
 tidy_storms[, crop_total := cropdmg * map_exp(cropdmgexp)]
 tidy_storms[, economic_loss := prop_total + crop_total]
 # ==============================================================================
+# ---- Data Analysis ----
+saveRDS(object = tidy_storms, file = file.path(getwd(), "tidy_storms.rds"))
+tidy_storms <- readRDS("tidy_storms.rds")
+# ---- Human loses ----
+tidy_storms[, .(fatalities, injuries), evtype]
+
+# ---- Economic loses ----
+tidy_storms[, .(economic_loss = sum(economic_loss, na.rm = TRUE), N = .N), 
+            by = clean_event][order(-economic_loss)][economic_loss > 0]
