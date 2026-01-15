@@ -16,9 +16,81 @@ Title: Your document should have a title that briefly summarizes your data analy
 
 Synopsis: Immediately after the title, there should be a synopsis which describes and summarizes your analysis in at most 10 complete sentences.
 
+The present analysis employs the National Oceanic & Atmospheric Administration (NOAA) and aims to quantify the impact in terms of human health and economic loses of extreme weather events (i. e.: tornados, extreme cold), in order to determine which ones are the most harmful.
+
+## Data Processing
 There should be a section titled Data Processing which describes (in words and code) how the data were loaded into R and processed for analysis. In particular, your analysis must start from the raw CSV file containing the data. You cannot do any preprocessing outside the document. If preprocessing is time-consuming you may consider using the 
-cache = TRUE
-cache = TRUEstart color red, start verbatim, cache = TRUE, end verbatim, end color red option for certain code chunks.
+cache = TRUE option for certain code chunks.
+
+We start by loading the packages and rawdata we require:
+
+```{r dataset, include=TRUE, echo=FALSE}
+
+# ---- Get files and libraries ----
+# First we get the package manager and libraries we'll need
+if(!require(pacman)){
+  install.packages("pacman")
+}
+pacman::p_load(data.table, 
+               ggplot2, 
+               lubridate,
+               flextable,
+               skimr,
+               stringr)
+
+# Now we download the data if needed, and read the file
+if(!file.exists("FStormData.csv")){
+  download.file(url = "https://d396qusza40orc.cloudfront.net/repdata%2Fdata%2FStormData.csv.bz2",
+                destfile = file.path(getwd(), "FStormData.csv"))
+}
+
+storms <- fread("FStormData.csv", 
+                na.strings = "", 
+                showProgress = TRUE, 
+                verbose = TRUE) |> janitor::clean_names()
+
+# clean_names here is included so that the dataset has tidy column names
+```
+
+In this next piece of code we'll see that the dataset is not apt for use as-is. The dates are in irregular format (so that we can't tell the year of each event, which could be relevant). The events names are also problematic, since they don't just reflect the categories recognized by the NOAA but many others (including irrelevant or misplaced data). Also many columns contain missing or irrelevant data, and we need to get rid of them. Finally, the quantity of money loses is codified, and we need to convert it to a numeric format. The way all of this was done is shown here, and the decisions taken are justified here. 
+
+```{r str, include=TRUE, echo=FALSE}
+str(storms)
+# We have 37 columns. 
+# Date columns are in character format
+# The time, range, location, and size related columns are not relevant to our problem
+# Property and crop damage columns have coded values. 
+# They need to be exponentiated using propdmgexp and cropdmgexp.
+
+# We'll start by keeping only the columns we'll require:
+
+tidy_storms <- copy(storms)
+
+tidy_storms <- tidy_storms[, .(bgn_date, end_date, state = as.factor(state), 
+                           state_2 = as.factor(state_2), county = as.factor(county),
+                           countyname, evtype, fatalities,
+                           injuries, propdmg, propdmgexp, cropdmg, cropdmgexp)]
+
+
+# Now, the date columns are in character format, and times are uninformative:
+dates <- names(tidy_storms)[names(tidy_storms) %like% "date"] 
+tidy_storms[!is.na(end_date), head(.SD, 5), .SDcols = dates]
+tidy_storms[!is.na(end_date), tail(.SD, 5), .SDcols = dates]
+
+# So we fix this dates:
+tidy_storms[, (dates) := lapply(.SD, sub, pattern = " .*$", replacement = ""), .SDcols = dates]
+tidy_storms[, (dates) := lapply(.SD, mdy), .SDcols = dates]
+
+# Now, we're going to see how many NA (non-available data) rows we have in each column, which could be an issue:
+tidy_storms[, colMeans(is.na(.SD)) |> round(2)] |> sort(decreasing = TRUE)
+
+# We see the end dates have 27% of NA, which shouldn't be a problem
+# Since we have the beginning date for every event.
+
+
+```
+
+## Results
 
 There should be a section titled Results in which your results are presented.
 
