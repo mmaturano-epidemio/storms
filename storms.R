@@ -41,21 +41,21 @@ pacman::p_load(data.table,
                stringr)
 
 # Now we download the data if needed, and read the file
-if(!file.exists("FStormData.csv")){
-  download.file(url = "https://d396qusza40orc.cloudfront.net/repdata%2Fdata%2FStormData.csv.bz2",
-                destfile = file.path(getwd(), "FStormData.csv"))
-}
-
-storms <- fread("FStormData.csv", 
-                na.strings = "", 
-                showProgress = TRUE, 
-                verbose = TRUE) |> janitor::clean_names()
+# if(!file.exists("FStormData.csv")){
+#   download.file(url = "https://d396qusza40orc.cloudfront.net/repdata%2Fdata%2FStormData.csv.bz2",
+#                 destfile = file.path(getwd(), "FStormData.csv"))
+# storms <- fread("FStormData.csv", 
+#                 na.strings = "", 
+#                 showProgress = TRUE, 
+#                 verbose = TRUE) |> janitor::clean_names()
+storms <- readRDS("FStormData.RDS")
 
 # ---- Data cleaning ----
+str(storms)
+
 dates <- names(storms)[names(storms) %like% "date"] 
 times <- names(storms)[names(storms) %like% "_time"]
 tidy_storms <- copy(storms)
-
 tidy_storms[, (dates) := lapply(.SD, sub, pattern = " .*$", replacement = ""), .SDcols = dates]
 tidy_storms[, (dates) := lapply(.SD, mdy), .SDcols = dates]
 tidy_storms[, colMeans(is.na(.SD)) |> round(2), .SDcols = (dates)] # NA proportion
@@ -164,7 +164,7 @@ map_exp <- function(x) {
     x == "M", 1e6,
     x == "B", 1e9,
     x %in% c("", "-", "?", "+"), 1,
-    x %in% as.character(0:8), 10, # O 10^as.numeric(x) si quieres ser muy estricto
+    x %in% as.character(0:8), 10, 
     default = 1
   )
 }
@@ -172,13 +172,142 @@ map_exp <- function(x) {
 tidy_storms[, prop_total := propdmg * map_exp(propdmgexp)]
 tidy_storms[, crop_total := cropdmg * map_exp(cropdmgexp)]
 tidy_storms[, economic_loss := prop_total + crop_total]
+tidy_storms[, year := year(bgn_date)]
+tidy_storms[, uniqueN(evtype), year]
+tidy_storms[year%in%c(seq(1950, 1990, 5)), unique(evtype), year]
+# We can see that most years on the dataset only consider three events:
+# Hail, tornado, and Tstm Wind. On the one hand, including all these years
+# Could heavily bias the analysis in favour of these events, simple for 
+# More data being available on them. On the other, eliminating them means losing
+# The majority of the registered years. We will firs eliminate them, and then
+# Use them on a sensitivity analysis. 
+clean_storms <- tidy_storms[year > 1992]
 # ==============================================================================
 # ---- Data Analysis ----
-saveRDS(object = tidy_storms, file = file.path(getwd(), "tidy_storms.rds"))
-tidy_storms <- readRDS("tidy_storms.rds")
+saveRDS(object = clean_storms, file = file.path(getwd(), "clean_storms.rds"))
+clean_storms <- readRDS("clean_storms.rds")
 # ---- Human loses ----
-tidy_storms[, .(fatalities, injuries), evtype]
+total_fatalities <- clean_storms[, sum(fatalities)]
+total_injuries <- clean_storms[, sum(injuries)]
+clean_storms[, .(fatalities = sum(fatalities),
+                 fatalities_pct = round(sum(fatalities) / total_fatalities * 100, 2),
+                 injuries = sum(injuries),
+                 injuries_pct = round(sum(injuries) / total_injuries * 100, 2)), 
+             evtype][order(-fatalities)][
+                 !(injuries == 0 & fatalities == 0)][1:20]
+
 
 # ---- Economic loses ----
-tidy_storms[, .(economic_loss = sum(economic_loss, na.rm = TRUE), N = .N), 
+total_loss <- clean_storms[, sum(economic_loss)]
+clean_storms[, .(economic_loss = sum(economic_loss, na.rm = TRUE), 
+                 economic_loss_pct = round(sum(economic_loss, na.rm = TRUE) / total_loss *100, 2),
+                 total_events = .N), 
             by = clean_event][order(-economic_loss)][economic_loss > 0]
+
+clean_storms[, unique(state)]
+clean_storms[, unique(state_2)]
+
+# ---- Total loses ----
+# Definir valores de monetización
+vsl_value <- 10e6    # 10 millones USD
+injury_value <- 5e5  # 500 mil USD
+
+# Calcular Carga de Salud y Carga Total
+clean_storms[, health_loss := (fatalities * vsl_value) + (injuries * injury_value)]
+clean_storms[, total_burden := economic_loss + health_loss]
+
+# Top 10 para el Manager (Tabla resumen)
+top_10_events <- clean_storms[, .(
+  total_burden_B = sum(total_burden) / 1e9,
+  economic_loss_B = sum(economic_loss) / 1e9,
+  health_loss_B = sum(health_loss) / 1e9,
+  fatalities = sum(fatalities),
+  total_events = .N
+), by = clean_event][order(-total_burden_B)][1:10]
+
+# Ver tabla
+flextable::flextable(top_10_events) |> 
+  flextable::colformat_double(digits = 2)
+
+# ---- By region ----
+northeast <- c("CT", "ME", "MA", "NH", "RI", "VT", "NJ", "NY", "PA")
+midwest   <- c("IL", "IN", "MI", "OH", "WI", "IA", "KS", "MN", "MO", "NE", "ND", "SD")
+south     <- c("DE", "FL", "GA", "MD", "NC", "SC", "VA", "DC", "WV", "AL", "KY", "MS", "TN", "AR", "LA", "OK", "TX")
+west      <- c("AZ", "CO", "ID", "MT", "NV", "NM", "UT", "WY", "AK", "CA", "HI", "OR", "WA")
+
+clean_storms[, region := fcase(
+  state_2 %in% northeast, "Northeast",
+  state_2 %in% midwest,   "Midwest",
+  state_2 %in% south,     "South",
+  state_2 %in% west,      "West",
+  state_2 %in% c("PR", "GU", "AS", "VI", "MH", "AM"), "Territories",
+  default = "Marine/Other"
+)]
+
+
+# Preparamos datos para el heatmap
+heatmap_data <- clean_storms[, .(burden = sum(total_burden)), by = .(year, clean_event, region)]
+
+# Filtramos solo el Top 15 de eventos globales para que el eje Y no sea eterno
+top_15_names <- clean_storms[, .(t = sum(total_burden)), by = clean_event][order(-t)][1:15, clean_event]
+
+# 1. Definir las dimensiones de la cuadrícula completa
+years_vec <- unique(clean_storms$year)
+regions_vec <- unique(clean_storms[region != "Other/Marine", region])
+
+# Recordamos tu lista del top 15 (asegúrate de tenerla definida)
+# top_15_names <- clean_storms[, .(t = sum(total_burden)), by = clean_event][order(-t)][1:15, clean_event]
+
+# 2. Usar CJ() para crear todas las combinaciones posibles
+complete_grid <- CJ(year = years_vec,
+                    clean_event = top_15_names,
+                    region = regions_vec)
+
+# Mira cómo complete_grid tiene ahora muchas más filas que tus datos agregados
+# print(dim(complete_grid))
+
+# 3. Tus datos agregados actuales (asegúrate de que esta parte ya la corriste)
+heatmap_regiones_actual <- clean_storms[clean_event %in% top_15_names & region != "Other/Marine", 
+                                        .(burden = sum(total_burden)), 
+                                        by = .(year, clean_event, region)]
+
+# 4. Realizar un RIGHT JOIN: Mantenemos toda la cuadrícula y pegamos los datos
+# Usamos 'heatmap_regiones_actual[complete_grid, ...]' para que el resultado tenga
+# todas las filas de complete_grid.
+heatmap_full <- heatmap_regiones_actual[complete_grid, on = .(year, clean_event, region)]
+
+# 5. El paso clave: Reemplazar NA por 0 en la columna de carga (burden)
+heatmap_full[is.na(burden), burden := 0]
+
+# Ahora heatmap_full es una cuadrícula sólida sin huecos.
+# Definimos el orden lógico: primero las 4 regiones principales, luego el resto
+niveles_region <- c("Northeast", "Midwest", "South", "West", "Territories", "Marine/Other")
+
+# Aplicamos el orden a nuestro DT final
+heatmap_full[, region := factor(region, levels = niveles_region)]
+ggplot(heatmap_full, aes(x = year, y = clean_event, fill = burden)) +
+  geom_tile(color = "white", linewidth = 0.1) +
+  scale_fill_viridis_c(
+    trans = "log10", 
+    # Recuperamos la referencia con etiquetas formateadas como moneda
+    labels = scales::label_dollar(scale = 1e-6, suffix = "M"),
+    na.value = "#440154", # Color morado oscuro para los ceros
+    name = "Carga Total\n(Salud + Eco)"
+  ) + 
+  facet_wrap(~region, ncol = 2) +
+  theme_minimal(base_size = 11) + 
+  labs(
+    title = "Distribución Geográfica del Impacto de Eventos Extremos",
+    subtitle = "Impacto acumulado anual (USD). Escala logarítmica para resaltar eventos de baja frecuencia.",
+    x = "Año", 
+    y = "Tipo de Evento"
+  ) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 9),
+    axis.text.y = element_text(size = 9),
+    strip.background = element_rect(fill = "gray95", color = NA), # Resalta el nombre de la región
+    strip.text = element_text(face = "bold"),
+    panel.grid = element_blank(),
+    legend.position = "right",
+    legend.key.height = unit(1.5, "cm") # Hace la leyenda más fácil de leer
+  )

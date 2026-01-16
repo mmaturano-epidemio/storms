@@ -1,6 +1,7 @@
 ---
 title: "On the human and economical impact of severe weather events"
 output: html_document
+author: Manuel Maturano
 date: "2026-01-14"
 ---
 
