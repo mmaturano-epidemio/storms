@@ -70,8 +70,8 @@ tidy_storms[!is.na(end_time), unique(end_time)] |> sample(size = 7)
 tidy_storms <- tidy_storms[, .(bgn_date, end_date, state = as.factor(state), 
                            state_2 = as.factor(state_2), county = as.factor(county),
                            countyname, evtype, fatalities,
-                           injuries, propdmg, propdmgexp, cropdmg, cropdmgexp)]
-
+                           injuries, propdmg, propdmgexp, cropdmg, cropdmgexp,
+                           remarks, refnum)]
 # Acording to NOAA, the types of events are:
 # Astronomical High Tide, Astronomical Low Tide, Avalanche, Blizzard, 
 # Coastal Flood, Cold/Wind Chill, Debris Flow, Dense Fog, Dense Smoke, Drought,
@@ -86,7 +86,7 @@ tidy_storms <- tidy_storms[, .(bgn_date, end_date, state = as.factor(state),
 # Volcanic Ash, Waterspout, Wildfire, Winter Storm, Winter Weather
 
 tidy_storms[, evtype := stringr::str_to_title(evtype)]
-tidy_storms[, unique(evtype)] |> sort()
+tidy_storms[, uniqueN(evtype)] 
 tidy_storms <- tidy_storms[!evtype %like% "(?i)Summary"]
 tidy_storms[, clean_event := fcase(
   evtype %like% "(?i)Flash Flood", "Flash Flood", # 
@@ -151,10 +151,14 @@ tidy_storms[, clean_event := fcase(
   evtype %like% "(?i)Other|Summary|\\?|None", "Other",
     default = evtype
 )]
+tidy_storms[, .(evtype = unique(evtype))][, head(evtype, 10)]
 tidy_storms[, uniqueN(clean_event)]
 tidy_storms[clean_event == evtype,
             .(fatalities = sum(fatalities), N = .N),
             by = clean_event][order(-fatalities)][fatalities > 0]
+
+tidy_storms[, .(propdmgexp = unique(propdmgexp))] |> c()
+tidy_storms[, .(cropdmgexp = unique(cropdmgexp))] |> c()
 
 map_exp <- function(x) {
   x <- toupper(as.character(x))
@@ -164,7 +168,7 @@ map_exp <- function(x) {
     x == "M", 1e6,
     x == "B", 1e9,
     x %in% c("", "-", "?", "+"), 1,
-    x %in% as.character(0:8), 10, 
+    is.na(x) | x %in% as.character(0:9), 10^as.numeric(x), 
     default = 1
   )
 }
@@ -173,8 +177,9 @@ tidy_storms[, prop_total := propdmg * map_exp(propdmgexp)]
 tidy_storms[, crop_total := cropdmg * map_exp(cropdmgexp)]
 tidy_storms[, economic_loss := prop_total + crop_total]
 tidy_storms[, year := year(bgn_date)]
-tidy_storms[, uniqueN(evtype), year]
-tidy_storms[year%in%c(seq(1950, 1990, 5)), unique(evtype), year]
+tidy_storms[, .(`Reported events` = uniqueN(evtype)), year]
+tidy_storms[year%in%c(seq(1950, 1990, 5)), 
+            .(`Reported events` = unique(evtype)), year]
 # We can see that most years on the dataset only consider three events:
 # Hail, tornado, and Tstm Wind. On the one hand, including all these years
 # Could heavily bias the analysis in favour of these events, simple for 
@@ -191,12 +196,16 @@ total_fatalities <- clean_storms[, sum(fatalities)]
 total_injuries <- clean_storms[, sum(injuries)]
 clean_storms[, .(fatalities = sum(fatalities),
                  fatalities_pct = round(sum(fatalities) / total_fatalities * 100, 2),
-                 injuries = sum(injuries),
+                injuries = sum(injuries),
                  injuries_pct = round(sum(injuries) / total_injuries * 100, 2)), 
-             evtype][order(-fatalities)][
-                 !(injuries == 0 & fatalities == 0)][1:20]
-
-
+             evtype][
+               order(-fatalities)][
+                 , `:=`(fatalities_cumpct = cumsum(fatalities_pct),
+                        injuries_cumpct = cumsum(injuries_pct))][
+                 !(injuries == 0 & fatalities == 0)][1:20] |> View()
+tidy_storms[countyname == "NAPA" & year == 2006, .(evtype, propdmg, propdmgexp, remarks)]
+?data.table::frollsum()
+?cumsum
 # ---- Economic loses ----
 total_loss <- clean_storms[, sum(economic_loss)]
 clean_storms[, .(economic_loss = sum(economic_loss, na.rm = TRUE), 
@@ -245,69 +254,58 @@ clean_storms[, region := fcase(
 )]
 
 
-# Preparamos datos para el heatmap
-heatmap_data <- clean_storms[, .(burden = sum(total_burden)), by = .(year, clean_event, region)]
-
-# Filtramos solo el Top 15 de eventos globales para que el eje Y no sea eterno
+# 1. El Top 15 por severidad (vector de caracteres)
 top_15_names <- clean_storms[, .(t = sum(total_burden)), by = clean_event][order(-t)][1:15, clean_event]
 
-# 1. Definir las dimensiones de la cuadrícula completa
-years_vec <- unique(clean_storms$year)
-regions_vec <- unique(clean_storms[region != "Other/Marine", region])
+# 2. Todas las regiones (incluyendo Marine/Other para que no quede el hueco blanco)
+# Nota: Usamos el nombre exacto que pusiste en el fcase original
+regions_vec <- unique(clean_storms$region) 
 
-# Recordamos tu lista del top 15 (asegúrate de tenerla definida)
-# top_15_names <- clean_storms[, .(t = sum(total_burden)), by = clean_event][order(-t)][1:15, clean_event]
+# 3. El orden de las facetas que querías
+niveles_region <- c("Northeast", "Midwest", "South", "West", "Territories", "Marine/Other")
 
-# 2. Usar CJ() para crear todas las combinaciones posibles
-complete_grid <- CJ(year = years_vec,
+# A. Cuadrícula completa
+complete_grid <- CJ(year = unique(clean_storms$year),
                     clean_event = top_15_names,
                     region = regions_vec)
 
-# Mira cómo complete_grid tiene ahora muchas más filas que tus datos agregados
-# print(dim(complete_grid))
-
-# 3. Tus datos agregados actuales (asegúrate de que esta parte ya la corriste)
-heatmap_regiones_actual <- clean_storms[clean_event %in% top_15_names & region != "Other/Marine", 
+# B. Datos agregados (sin transformar factores todavía)
+heatmap_regiones_actual <- clean_storms[clean_event %in% top_15_names, 
                                         .(burden = sum(total_burden)), 
                                         by = .(year, clean_event, region)]
 
-# 4. Realizar un RIGHT JOIN: Mantenemos toda la cuadrícula y pegamos los datos
-# Usamos 'heatmap_regiones_actual[complete_grid, ...]' para que el resultado tenga
-# todas las filas de complete_grid.
+# C. Join limpio: Traemos los datos a la cuadrícula completa
 heatmap_full <- heatmap_regiones_actual[complete_grid, on = .(year, clean_event, region)]
 
-# 5. El paso clave: Reemplazar NA por 0 en la columna de carga (burden)
+# D. Rellenar NAs con 0
 heatmap_full[is.na(burden), burden := 0]
-
-# Ahora heatmap_full es una cuadrícula sólida sin huecos.
-# Definimos el orden lógico: primero las 4 regiones principales, luego el resto
-niveles_region <- c("Northeast", "Midwest", "South", "West", "Territories", "Marine/Other")
-
-# Aplicamos el orden a nuestro DT final
+# Orden de regiones para las facetas
 heatmap_full[, region := factor(region, levels = niveles_region)]
+
+# Orden de eventos: el más severo (Flood) quedará al final del factor, o sea, ARRIBA
+heatmap_full[, clean_event := factor(clean_event, levels = rev(top_15_names))]
 ggplot(heatmap_full, aes(x = year, y = clean_event, fill = burden)) +
-  geom_tile(color = "white", linewidth = 0.1) +
+  geom_tile(color = "white", linewidth = 0.05) +
   scale_fill_viridis_c(
     trans = "log10", 
-    # Recuperamos la referencia con etiquetas formateadas como moneda
     labels = scales::label_dollar(scale = 1e-6, suffix = "M"),
-    na.value = "#440154", # Color morado oscuro para los ceros
-    name = "Carga Total\n(Salud + Eco)"
+    na.value = "#440154", 
+    name = "Carga Total\n(Eco + Salud)"
   ) + 
   facet_wrap(~region, ncol = 2) +
   theme_minimal(base_size = 11) + 
   labs(
-    title = "Distribución Geográfica del Impacto de Eventos Extremos",
-    subtitle = "Impacto acumulado anual (USD). Escala logarítmica para resaltar eventos de baja frecuencia.",
-    x = "Año", 
-    y = "Tipo de Evento"
+    title = "Jerarquía de Severidad por Región y Año",
+    subtitle = "Eventos ordenados por impacto global acumulado (más severos arriba)",
+    x = "Año", y = ""
   ) +
   theme(
-    axis.text.x = element_text(angle = 45, hjust = 1, size = 9),
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 8),
     axis.text.y = element_text(size = 9),
-    strip.background = element_rect(fill = "gray95", color = NA), # Resalta el nombre de la región
+    strip.background = element_rect(fill = "gray95", color = NA),
     strip.text = element_text(face = "bold"),
     panel.grid = element_blank(),
-    legend.position = "right",
-    legend.key.height = unit(1.5, "cm") # Hace la leyenda más fácil de leer
+    legend.position = "bottom",
+    legend.key.width = unit(2, "cm")
   )
+graphics.off()
