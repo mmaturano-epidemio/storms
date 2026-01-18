@@ -1,0 +1,412 @@
+---
+title: "On the human and economic impact of severe weather events in the US"
+output: html_document
+author: Manuel Maturano
+date: "2026-01-14"
+editor_options: 
+  markdown: 
+    wrap: 72
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+```
+# On the human and economic impact of severe weather events
+
+## Synopsis
+This analysis explores the U.S. National Oceanic and Atmospheric Administration's (NOAA) Storm Database to quantify the impact of extreme weather events in terms of human health and economic losses. The goal is to identify which event categories (e.g., tornadoes, excessive heat) are the most harmful to the population and the economy. The study focuses on data from 1993 onwards to ensure consistency and concludes that while tornadoes cause the most injuries, excessive heat is the primary cause of weather-related fatalities.
+
+## Data Processing
+The data processing section is divided into two parts. In the first part, Data Cleaning, we describe the characteristics of the raw data, the justification for the transformations required, and how these were implemented.
+
+In the second part, Data Analysis, we describe the analytic plan and its implementation. The rationale for performing this here, rather than in the Results section, is to ensure the latter focuses primarily on the findings, keeping it free from long code blocks and transparent to the reader.
+
+### Data Cleaning
+During the initial processing steps, it became evident that the dataset was not suitable for analysis in its raw state. Dates were in an irregular format, preventing clear identification of the year—a variable crucial to this analysis. Event names were also problematic; they did not strictly reflect the 48 categories recognized by NOAA, but included hundreds of variations and typos. Furthermore, many columns contained missing or redundant information that had to be removed for computational efficiency.
+
+Additionally, monetary losses were encoded using character suffixes (e.g., "K", "M") and needed to be converted into a numeric format. Finally, an imputation error regarding the losses of a specific disaster in Napa Valley was identified and corrected. The implementation of these steps is detailed below.
+
+We start by loading the required packages and the raw data:
+
+```{r}
+# ---- Get files and libraries ----
+if(!require(pacman)) install.packages("pacman")
+pacman::p_load(data.table, 
+               ggplot2, 
+               lubridate, 
+               flextable, 
+               stringr)
+
+# Download data if not present
+if(!file.exists("FStormData.csv")){
+  download.file(url = "https://d396qusza40orc.cloudfront.net/repdata%2Fdata%2FStormData.csv.bz2",
+                destfile = file.path(getwd(), "FStormData.csv"))
+}
+
+storms <- fread("FStormData.csv",
+                na.strings = "") |> janitor::clean_names()
+```
+Now we explore the structure of the data and start with the necessary transformations:
+
+```{r}
+
+str(storms)
+
+# We keep only the columns relevant to our problem (dates, location, type, and damage)
+tidy_storms <- storms[, .(bgn_date, 
+                          end_date, 
+                          state = as.factor(state),
+                          state_2 = as.factor(state_2), 
+                          county = as.factor(county),
+                          countyname, 
+                          evtype, 
+                          fatalities,
+                          injuries, 
+                          propdmg, 
+                          propdmgexp, 
+                          cropdmg, 
+                          cropdmgexp,
+                          remarks, 
+                          refnum)]
+
+# Date formatting: removing timestamps and converting to Date objects
+dates <- names(tidy_storms)[names(tidy_storms) %like% "date"] 
+tidy_storms[, (dates) := lapply(.SD, sub, pattern = " .*$", replacement = ""), .SDcols = dates]
+tidy_storms[, (dates) := lapply(.SD, mdy), .SDcols = dates]
+
+# Creating a "year" column for temporal analysis
+tidy_storms[, year := year(bgn_date)]
+```
+We now assess consistency in data recording across years:
+
+```{r}
+# Check reporting variability across decades
+
+min_year <- tidy_storms[, unique(year)] |> min()
+max_year <- tidy_storms[, unique(year)] |> max()
+tidy_storms[year%in%c(seq(min_year, max_year, 10)), .(`Reported events` = uniqueN(evtype)), year]
+
+# Check reported events every 10 years
+tidy_storms[year %in% c(seq(1950, 1990, 10)), 
+            .(`Reported events` = unique(evtype)), year]
+```
+We can see that earlier years in the dataset only record three events: Tornado, Tstm Wind, and Hail. Including these years would heavily bias the analysis in favor of these events simply because more data are available for them. Therefore, we will exclude data prior to 1993 to ensure a more balanced comparison.
+
+```{r}
+tidy_storms <- tidy_storms[year >= 1993]
+```
+Next, we handle missing values (NAs) and encoded exponents:
+
+```{r}
+# Check for NAs
+tidy_storms[, colMeans(is.na(.SD)) |> round(2)] |> sort(decreasing = TRUE)
+```
+
+Crop and property damage exponents are often missing, or encoded with characters (as shown next). We implement a mapping function to convert these symbols (H, K, M, B) into numeric multipliers.
+
+```{r}
+# Check exponent encoding
+tidy_storms[, .(propdmgexp = unique(propdmgexp))] |> c()
+tidy_storms[, .(cropdmgexp = unique(cropdmgexp))] |> c()
+
+# Function to map exponents
+map_exp <- function(x) {
+  x <- toupper(as.character(x))
+  fcase(
+    x %like% "H", 1e2,
+    x %like% "K", 1e3,
+    x %like% "M", 1e6,
+    x %like% "B", 1e9,
+    # Numeric exponents (0-8) are treated as powers of 10
+    x %chin% as.character(0:9), 10^as.numeric(x),  
+    # Default case (symbols like +, -, ?) means no multiplier (1)
+    default = 1
+  )
+}
+
+# Calculate total monetary loss
+tidy_storms[, prop_total := propdmg * map_exp(propdmgexp)]
+tidy_storms[, crop_total := cropdmg * map_exp(cropdmgexp)]
+tidy_storms[, economic_loss := prop_total + crop_total]
+```
+Now, we address the inconsistency in Event Types (evtype). The raw data contains hundreds of variations. We use regular expressions to group them into the standard NOAA categories.
+
+```{r}
+# Standardize format
+tidy_storms[, evtype := stringr::str_to_title(evtype)]
+
+# Remove summary rows
+tidy_storms <- tidy_storms[!evtype %like% "(?i)Summary"]
+
+# Apply cleaning logic
+tidy_storms[, clean_event := fcase(
+  # 1. HEAT
+  evtype %like% "(?i)Heat|Warm|Hot|Record High", "Excessive Heat",
+  # 2. TORNADO & TROPICAL
+  evtype %like% "(?i)Tornado|Torn?da?o|Whirlwind|Gustnado", "Tornado",
+  evtype %like% "(?i)Hurricane|Typhoon", "Hurricane/Typhoon",
+  evtype %like% "(?i)Tropical Storm", "Tropical Storm",
+  # 3. FLOOD
+  evtype %like% "(?i)Flash Flood|Rapidly Rising", "Flash Flood",
+  evtype %like% "(?i)Lakeshore Flood", "Lakeshore Flood",
+  evtype %like% "(?i)Coastal Flood|Cstl Flood|Tidal", "Coastal Flood",
+  evtype %like% "(?i)Flood|Fld|Stream|Urban", "Flood",
+  # 4. WIND & THUNDERSTORM
+  evtype %like% "(?i)Marine (Thunderstorm|Tstm)", "Marine Thunderstorm Wind",
+  evtype %like% "(?i)Thunderstorm|Tstm|Thund?e?e?r?sto?r?m|Burst|Tunderstorm", "Thunderstorm Wind",
+  evtype %like% "(?i)Marine High Wind", "Marine High Wind",
+  evtype %like% "(?i)High Wind|High  Wind", "High Wind",
+  evtype %like% "(?i)Marine Strong Wind", "Marine Strong Wind",
+  evtype %like% "(?i)Strong Wind|Gusty|^Winds?$", "Strong Wind",
+  # 5. WINTER & COLD
+  evtype %like% "(?i)Extreme (Cold|Wind ?Chill|Windchill)", "Extreme Cold/Wind Chill",
+  evtype %like% "(?i)Cold|Wind Chill|Hypothermia|Low Temp|Exposure", "Cold/Wind Chill",
+  evtype %like% "(?i)Blizzard", "Blizzard",
+  evtype %like% "(?i)Winter Storm", "Winter Storm",
+  evtype %like% "(?i)Winter Weather|Wintry|Glaze|Black Ice|Ice On Road|Freezing", "Winter Weather",
+  evtype %like% "(?i)Ice Storm", "Ice Storm",
+  evtype %like% "(?i)Snow", "Heavy Snow",
+  evtype %like% "(?i)Frost|Freeze", "Frost/Freeze",
+  # 6. MARINE & COASTAL
+  evtype %like% "(?i)Rip Current", "Rip Current",
+  evtype %like% "(?i)Surf|High Tide|High Water|Swells|Waves|Seas|Drowning", "High Surf",
+  evtype %like% "(?i)Storm Surge|Coastal ?storm", "Storm Surge/Tide",
+  # 7. OTHERS
+  evtype %like% "(?i)Ligh?tning|Ligntning", "Lightning",
+  evtype %like% "(?i)Wildfire|Fire|Forest Fire", "Wildfire",
+  evtype %like% "(?i)Landslide|Mud ?slide|Debris|Rock Slide", "Debris Flow",
+  evtype %like% "(?i)Avalanche|Avalance", "Avalanche",
+  evtype %like% "(?i)Drought", "Drought",
+  evtype %like% "(?i)Fog", "Dense Fog",
+  evtype %like% "(?i)Rain|Shower|Precip", "Heavy Rain",
+  evtype %like% "(?i)Other|Summary|\\?|None", "Other",
+  default = evtype
+)]
+
+# Reduction metric
+reduction_pct <- round(tidy_storms[, uniqueN(clean_event)] / tidy_storms[, uniqueN(evtype)] * 100, 2)
+```
+We have significantly reduced the noise in the data, retaining only `r reduction_pct`% of the original event types. For geographical analysis, we also map states to US Regions:
+
+```{r}
+northeast <- c("CT", "ME", "MA", "NH", "RI", "VT", "NJ", "NY", "PA")
+midwest   <- c("IL", "IN", "MI", "OH", "WI", "IA", "KS", "MN", "MO", "NE", "ND", "SD")
+south     <- c("DE", "FL", "GA", "MD", "NC", "SC", "VA", "DC", "WV", "AL", "KY", "MS", "TN", "AR", "LA", "OK", "TX")
+west      <- c("AZ", "CO", "ID", "MT", "NV", "NM", "UT", "WY", "AK", "CA", "HI", "OR", "WA")
+
+tidy_storms[, region := fcase(
+  state_2 %in% northeast, "Northeast",
+  state_2 %in% midwest,   "Midwest",
+  state_2 %in% south,     "South",
+  state_2 %in% west,      "West",
+  state_2 %in% c("PR", "GU", "AS", "VI", "MH", "AM"), "Territories",
+  default = "Marine/Other"
+)]
+```
+Finally, during data exploration, a significant outlier was detected in Napa Valley (2006), where a flood was incorrectly recorded with a "B" (Billions) exponent instead of "M" (Millions) in the remarks.
+
+```{r}
+# Display the outlier
+tidy_storms[countyname == "NAPA" & year == 2006 & propdmgexp == "B", 
+            .(evtype, propdmg, propdmgexp, remarks)]
+
+# Fix the outlier
+tidy_storms[countyname == "NAPA" & year == 2006 & propdmgexp == "B", 
+            `:=`(prop_total = prop_total / 1000, 
+                 economic_loss = (prop_total / 1000) + crop_total)]
+```
+### Data Analysis
+
+In this section, we prepare the aggregated tables that will be used in the Results section.
+
+First, we aggregate the health impact data:
+
+```{r}
+# ---- Health impact ----
+total_fatalities <- tidy_storms[, sum(fatalities)]
+total_injuries <- tidy_storms[, sum(injuries)]
+
+health_table <- tidy_storms[, .(
+    fatalities = sum(fatalities),
+    fatalities_pct = round(sum(fatalities) / total_fatalities * 100, 2),
+    injuries = sum(injuries),
+    injuries_pct = round(sum(injuries) / total_injuries * 100, 2)
+  ), by = clean_event][order(-fatalities)]
+
+# Add cumulative percentages
+health_table[, `:=`(
+  fatalities_cumpct = cumsum(fatalities_pct),
+  injuries_cumpct = cumsum(injuries_pct)
+)]
+
+# Filter non-zero events and keep top 20
+health_table <- health_table[!(injuries == 0 & fatalities == 0)][1:20]
+
+health_table
+```
+The top 20 events explain `r health_table[20, fatalities_cumpct]`% of total fatalities and `r health_table[20, injuries_cumpct]`% of injuries. We will focus our health analysis on these categories.
+
+Next, we aggregate the economic impact data (Property and Crop damage):
+
+```{r}
+# ---- Economic impact ----
+total_loss <- tidy_storms[, sum(economic_loss, na.rm = TRUE)] 
+prop_loss <- tidy_storms[, sum(prop_total, na.rm = TRUE)] 
+crop_loss <- tidy_storms[, sum(crop_total, na.rm = TRUE)] 
+
+economy_table <- tidy_storms[, .(
+    prop_total = sum(prop_total) / 10^6, # Convert to Millions
+    prop_total_pct = round(sum(prop_total) / prop_loss * 100, 2),
+    crop_total = sum(crop_total)/ 10^6,  # Convert to Millions
+    crop_total_pct = round(sum(crop_total) / crop_loss * 100, 2)
+  ), by = clean_event][order(-prop_total)]
+
+# Add cumulative percentages
+economy_table[, `:=`(
+  prop_total_cumpct = cumsum(prop_total_pct),
+  crop_total_cumpct = cumsum(crop_total_pct)
+)]
+
+# Filter non-zero events and keep top 20
+economy_table <- economy_table[!(crop_total == 0 & prop_total == 0)][1:20]
+
+economy_table
+```
+The top 20 events explain `r economy_table[20, prop_total_cumpct]`% of total property damage and `r economy_table[20, crop_total_cumpct]`% of crop damage. Note that values are expressed in Millions of USD.
+
+#### Unifying Metrics: The Global Burden
+While the individual analyses of health and economic impacts provide valuable insights, they reveal a discrepancy: some events are financially devastating but cause few casualties, while others are lethal but cause minimal property damage.
+
+```{r}
+# ---- Global impact discrepancies ----
+health_events <- health_table[, unique(clean_event)]
+eco_events <- economy_table[, unique(clean_event)]
+
+# Events present in Top 20 Health but NOT in Top 20 Economy
+health_only <- health_events[!health_events %chin% eco_events]
+health_only
+# Events present in Top 20 Economy but NOT in Top 20 Health
+eco_only <- eco_events[!eco_events %chin% health_events]
+eco_only
+```
+
+To address this and determine the "most harmful" events in a holistic manner, we construct a unified metric: Total Economic Burden. We monetize health impacts using the [Value of Statistical Life (VSL)](https://en.wikipedia.org/wiki/Value_of_life) approach. Following guidance from the U.S. Department of Transportation, we assign a value of **$13.2 million** to each fatality and 10% of that value ($1.32 million) to each injury.
+
+While we acknowledge that assigning a monetary value to human life is an imperfect heuristic, it allows for a standardized comparison of magnitude across different types of disasters.
+ 
+```{r}
+# VSL Constants (in USD)
+vsl_value <- 13.2e6      
+injury_value <- 13.2e5   
+
+# Estimate Global Burden
+tidy_storms[, health_loss := (fatalities * vsl_value) + (injuries * injury_value)]
+tidy_storms[, total_burden := economic_loss + health_loss]
+
+sum_burden <- tidy_storms[, sum(total_burden, na.rm = TRUE)]
+
+# Create the Top 20 Global Impact Table
+top_events <- tidy_storms[, .(
+  total_events = .N,
+  total_burden_B = sum(total_burden) / 1e9, # Billions
+  total_burden_B_pct = round(sum(total_burden) / sum_burden * 100, 2),
+  fatalities = sum(fatalities),
+  injuries = sum(injuries),
+  health_loss_B = sum(health_loss)/ 1e9,
+  prop_dmg_B  = sum(prop_total) / 1e9,
+  crop_dmg_B = sum(crop_total) / 1e9,
+  economic_loss = sum(economic_loss)  / 1e9
+), by = clean_event][order(-total_burden_B)][, total_burden_B_pct_cum := cumsum(total_burden_B_pct)][1:20]
+data.table::setcolorder(top_events, 
+                        c("clean_event","total_events", "total_burden_B", "total_burden_B_pct",
+                          "total_burden_B_pct_cum", "fatalities", "injuries",
+                          "health_loss_B", "prop_dmg_B", "crop_dmg_B", "economic_loss"))
+
+# Formatting for display
+table_1 <- flextable::flextable(top_events) |> 
+  flextable::set_header_labels(
+    clean_event = "Event Type",
+    total_events = "Count",
+    total_burden_B = "Total Burden ($B)",
+    total_burden_B_pct = "% Total",
+    total_burden_B_pct_cum = "Cum %",
+    fatalities = "Deaths",
+    injuries = "Injuries",
+    health_loss_B = "Health Loss ($B)",
+    prop_dmg_B = "Prop. Loss ($B)",
+    crop_dmg_B = "Crop Loss ($B)",
+    economic_loss = "Eco. Loss ($B)"
+  ) |> 
+  flextable::colformat_double(digits = 2) |> 
+  flextable::colformat_int(j = c("total_events", "fatalities", "injuries")) |> 
+  flextable::align(j = 1, align = "left", part = "all") |> 
+  flextable::align(j = 2:11, align = "right", part = "all") |> 
+  flextable::width(j = 1, width = 1.8) |>     
+  flextable::width(j = 2:11, width = 0.8) |>  
+  flextable::fontsize(size = 9, part = "all") |> 
+  flextable::bold(part = "header") |> 
+  flextable::set_caption("Table 1: Top 20 Weather Events by Integrated Economic Burden (1993-2011)")
+table_1
+
+```
+
+#### Regional & Temporal Analysis Preparation
+
+Finally, to visualize how these impacts are distributed across time and space (US Regions), we prepare the dataset for a heatmap visualization. We generate a complete grid of years, regions, and events to ensure that years with zero recorded losses are accurately represented as such, rather than being omitted.
+
+```{r}
+# 1. Identify the Top 20 events by Total Burden for the plot
+top_20_names <- tidy_storms[, .(t = sum(total_burden)), by = clean_event][order(-t)][1:20, clean_event]
+
+# 2. Define Regions and Factor Levels for plotting order
+regions_vec <- unique(tidy_storms$region) 
+niveles_region <- c("Northeast", "Midwest", "South", "West", "Territories", "Marine/Other")
+
+# 3. Create a complete grid (Cross Join) to handle missing years/regions
+complete_grid <- CJ(year = unique(tidy_storms$year),
+                    clean_event = top_20_names,
+                    region = regions_vec)
+
+# 4. Aggregate data
+regions_heatmap <- tidy_storms[clean_event %in% top_20_names, 
+                                     .(burden = sum(total_burden)), 
+                                     by = .(year, clean_event, region)]
+
+# 5. Merge grid with data and fill NAs with 0
+heatmap_full <- regions_heatmap[complete_grid, on = .(year, clean_event, region)]
+heatmap_full[is.na(burden), burden := 0]
+
+# 6. Set Factors for Plot Ordering
+# Regions: Geographical order
+heatmap_full[, region := factor(region, levels = niveles_region)]
+# Events: Most severe (Flood/Hurricane) on top
+heatmap_full[, clean_event := factor(clean_event, levels = rev(top_20_names))]
+
+# 7. Create the Plot Object (to be printed in Results)
+impact_heatmap <- ggplot(heatmap_full, aes(x = year, y = clean_event, fill = burden)) +
+  geom_tile(color = "white", linewidth = 0.05) +
+  scale_fill_viridis_c(
+    trans = "log10", 
+    labels = scales::label_dollar(scale = 1e-6, suffix = "M"),
+    na.value = "#440154", 
+    name = "Total Burden\n(Eco + Health)"
+  ) + 
+  facet_wrap(~region, ncol = 2) +
+  theme_minimal(base_size = 11) + 
+  labs(
+    title = "Severity Hierarchy by Region and Year",
+    subtitle = "Events ordered by cumulative global impact (Most severe on top)",
+    x = "Year", y = ""
+  ) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 8),
+    axis.text.y = element_text(size = 9),
+    strip.background = element_rect(fill = "gray95", color = NA),
+    strip.text = element_text(face = "bold"),
+    panel.grid = element_blank(),
+    legend.position = "bottom",
+    legend.key.width = unit(2, "cm")
+  )
+
+impact_heatmap
+```
