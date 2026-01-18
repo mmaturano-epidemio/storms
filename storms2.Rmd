@@ -1,27 +1,33 @@
 ---
-title: "On the human and economic impact of severe weather events in the US"
-output: html_document
+title: "Quantifying the Global Burden of Severe Weather Events: A Unified Analysis of Health and Economic Loss (1993-2011)"
+subtitle: "A unified analysis of mortality, morbidity, and economic loss (1993-2011)"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 3
+    theme: united
 author: Manuel Maturano
-date: "2026-01-14"
+date: "2026-01-18"
 editor_options: 
   markdown: 
     wrap: 72
+    
 ---
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
 ```
-# On the human and economic impact of severe weather events
 
-## Synopsis
-This analysis explores the U.S. National Oceanic and Atmospheric Administration's (NOAA) Storm Database to quantify the impact of extreme weather events in terms of human health and economic losses. The goal is to identify which event categories (e.g., tornadoes, excessive heat) are the most harmful to the population and the economy. The study focuses on data from 1993 onwards to ensure consistency and concludes that while tornadoes cause the most injuries, excessive heat is the primary cause of weather-related fatalities.
+# Synopsis
+This analysis explores the U.S. National Oceanic and Atmospheric Administration's (NOAA) Storm Database to quantify the impact of extreme weather events in terms of human health and economic losses. The goal is to identify which event categories are the most harmful to the population and the economy. To ensure data consistency and representativeness across all event types, the study focuses on the period from 1993 to 2011. A unified metric, the Total Economic Burden, was constructed by monetizing health impacts using the Value of Statistical Life (VSL) approach, allowing for a direct comparison between mortality and financial damage. The findings reveal that just five event types—Hurricane/Typhoon, Tornado, Flood, Excessive Heat, and Storm Surge—account for over 60% of the total national burden. While Tornadoes lead in total injuries, Excessive Heat stands as the primary cause of weather-related fatalities. Geographically, the South emerged as the most severely affected region, bearing a disproportionate share of the costs due to hurricane and storm surge activity. Ultimately, the results suggest that disaster mitigation strategies must be regionally specialized to address the specific "hidden" costs of thermal extremes alongside high-visibility kinetic events.
 
-## Data Processing
+# Data Processing
 The data processing section is divided into two parts. In the first part, Data Cleaning, we describe the characteristics of the raw data, the justification for the transformations required, and how these were implemented.
 
 In the second part, Data Analysis, we describe the analytic plan and its implementation. The rationale for performing this here, rather than in the Results section, is to ensure the latter focuses primarily on the findings, keeping it free from long code blocks and transparent to the reader.
 
-### Data Cleaning
+## Data Cleaning
 During the initial processing steps, it became evident that the dataset was not suitable for analysis in its raw state. Dates were in an irregular format, preventing clear identification of the year—a variable crucial to this analysis. Event names were also problematic; they did not strictly reflect the 48 categories recognized by NOAA, but included hundreds of variations and typos. Furthermore, many columns contained missing or redundant information that had to be removed for computational efficiency.
 
 Additionally, monetary losses were encoded using character suffixes (e.g., "K", "M") and needed to be converted into a numeric format. Finally, an imputation error regarding the losses of a specific disaster in Napa Valley was identified and corrected. The implementation of these steps is detailed below.
@@ -215,7 +221,7 @@ tidy_storms[countyname == "NAPA" & year == 2006 & propdmgexp == "B",
             `:=`(prop_total = prop_total / 1000, 
                  economic_loss = (prop_total / 1000) + crop_total)]
 ```
-### Data Analysis
+## Data Analysis
 
 In this section, we prepare the aggregated tables that will be used in the Results section.
 
@@ -274,7 +280,7 @@ economy_table
 ```
 The top 20 events explain `r economy_table[20, prop_total_cumpct]`% of total property damage and `r economy_table[20, crop_total_cumpct]`% of crop damage. Note that values are expressed in Millions of USD.
 
-#### Unifying Metrics: The Global Burden
+### Unifying Metrics: The Global Burden
 While the individual analyses of health and economic impacts provide valuable insights, they reveal a discrepancy: some events are financially devastating but cause few casualties, while others are lethal but cause minimal property damage.
 
 ```{r}
@@ -335,7 +341,7 @@ table_1 <- flextable::flextable(top_events) |>
     health_loss_B = "Health Loss ($B)",
     prop_dmg_B = "Prop. Loss ($B)",
     crop_dmg_B = "Crop Loss ($B)",
-    economic_loss = "Eco. Loss ($B)"
+    economic_loss = "Total Eco. Loss ($B)"
   ) |> 
   flextable::colformat_double(digits = 2) |> 
   flextable::colformat_int(j = c("total_events", "fatalities", "injuries")) |> 
@@ -346,11 +352,10 @@ table_1 <- flextable::flextable(top_events) |>
   flextable::fontsize(size = 9, part = "all") |> 
   flextable::bold(part = "header") |> 
   flextable::set_caption("Table 1: Top 20 Weather Events by Integrated Economic Burden (1993-2011)")
-table_1
 
 ```
 
-#### Regional & Temporal Analysis Preparation
+### Regional & Temporal Analysis Preparation
 
 Finally, to visualize how these impacts are distributed across time and space (US Regions), we prepare the dataset for a heatmap visualization. We generate a complete grid of years, regions, and events to ensure that years with zero recorded losses are accurately represented as such, rather than being omitted.
 
@@ -389,7 +394,7 @@ impact_heatmap <- ggplot(heatmap_full, aes(x = year, y = clean_event, fill = bur
     trans = "log10", 
     labels = scales::label_dollar(scale = 1e-6, suffix = "M"),
     na.value = "#440154", 
-    name = "Total Burden\n(Eco + Health)"
+    name = "Total Burden\n(Economy + Health)"
   ) + 
   facet_wrap(~region, ncol = 2) +
   theme_minimal(base_size = 11) + 
@@ -399,14 +404,75 @@ impact_heatmap <- ggplot(heatmap_full, aes(x = year, y = clean_event, fill = bur
     x = "Year", y = ""
   ) +
   theme(
-    axis.text.x = element_text(angle = 45, hjust = 1, size = 8),
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 7),
     axis.text.y = element_text(size = 9),
     strip.background = element_rect(fill = "gray95", color = NA),
     strip.text = element_text(face = "bold"),
     panel.grid = element_blank(),
+    panel.spacing = unit(1, "lines"),
     legend.position = "bottom",
-    legend.key.width = unit(2, "cm")
+    legend.key.width = unit(2, "cm"),
+    legend.key.height = unit(0.5, "cm"),
   )
 
-impact_heatmap
 ```
+
+# Results
+Between the years `r tidy_storms[, min(year)]` and `r tidy_storms[, max(year)]`, the NOAA database captured a total of `r format(tidy_storms[, .N], big.mark=",")` extreme weather events. These disasters resulted in `r format(tidy_storms[, sum(fatalities)], big.mark=",")` fatalities and `r format(tidy_storms[, sum(injuries)], big.mark=",")` injuries. Beyond the human toll, the economic impact was staggering, with an estimated $`r round(tidy_storms[, sum(economic_loss)] / 10^9, 2)` billion in property and crop damage.
+
+To quantify the global burden of these events, we constructed a unified metric: Total Economic Burden. This was achieved by monetizing health impacts using the Value of Statistical Life (VSL) approach, as detailed in the Data Processing section. This allows for a direct comparison between the immediate financial costs of infrastructure damage and the profound societal cost of human loss.
+
+## Total Economic Burden of Severe Weather Events
+
+Table 1 summarizes the health and economic impacts of the 20 most catastrophic event categories. As shown, the distribution of damage is highly concentrated; a small number of event types account for the vast majority of both human and financial losses.
+
+```{r}
+table_1
+
+```
+
+## Geographical and Temporal Distribution
+
+While the aggregate data provides a national overview, extreme weather impact is highly dependent on regional climate and infrastructure. The heatmap below illustrates how the Total Burden is distributed across time and US regions, revealing specific patterns of vulnerability.
+
+```{r  impact_heatmap, fig.height = 12, fig.width = 10, fig.cap = "Heatmap of Weather Impact"}
+
+impact_heatmap
+
+```
+
+
+A breakdown of the Total Economic Burden by region confirms that the South is the most severely affected area in the United States, accounting for over $225 billion in total damages. This is primarily driven by its unique vulnerability to both high-fatality events (Tornadoes, Heat) and high-property-damage events (Hurricanes).
+
+The regional distribution is as follows:
+
+- South: `r (tidy_storms[region == "South", sum(economic_loss)] / 10^9) |> round(2)` B
+
+- West: `r (tidy_storms[region == "West", sum(economic_loss)] / 10^9) |> round(2)` B
+
+- Midwest: West: `r (tidy_storms[region == "Midwest", sum(economic_loss)] / 10^9) |> round(2)` B
+
+- Northeast: $15.32 `r (tidy_storms[region == "Northeast", sum(economic_loss)] / 10^9) |> round(2)` B
+
+
+# Discussion and Conclusions
+
+The implementation of the Total Economic Burden metric allows for a comprehensive comparison of events with fundamentally different profiles. While traditional metrics might focus solely on casualties or infrastructure repair costs, this integrated approach reveals the true scale of weather-related disasters.
+
+### Concentration of Risk
+
+A staggering finding is that only five event types (Hurricane/Typhoon, Tornado, Flood, Excessive Heat, and Storm Surge/Tide) account for more than 60% of the total global burden. This suggests that federal and regional mitigation strategies should prioritize these high-impact categories to achieve the greatest reduction in overall risk.
+
+### Metric Sensitivity and Balance 
+
+The VSL-based approach proved to be well-proportioned for this dataset. For instance, the Health Loss from Tornadoes ($52.63B) and Excessive Heat ($54.15B) sits on a comparable scale with the Economic Loss from Hurricanes ($90.87B). This balance ensures that neither the human toll nor the financial destruction is overlooked in the final ranking.
+
+### Geographical Specialization 
+
+The analysis highlights that "one size fits all" disaster policies are ineffective. The South bears a disproportionate share of the national burden, largely due to the extreme costs associated with Hurricanes and Storm Surges. Meanwhile, the West faces a distinct set of challenges, often tied to wildfire and hydrological volatility.
+
+### Limitations
+
+It is important to acknowledge that this model does not account for inflation (the value of the USD has changed significantly since 1993) or the long-term psychological and sociological impacts of these disasters. Furthermore, the 10% valuation for injuries is a conservative estimate that may vary depending on the severity of the medical cases.
+
+In conclusion, while kinetic events like Tornadoes and Hurricanes dominate the public eye due to their visual destruction, thermal extremes (Excessive Heat) represent an equally costly and lethal threat that requires sustained public health intervention.
